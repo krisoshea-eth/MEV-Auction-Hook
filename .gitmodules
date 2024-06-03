@@ -1,0 +1,3 @@
+[submodule "mev-auction-hook/lib/forge-std"]
+	path = mev-auction-hook/lib/forge-std
+	url = https://github.com/foundry-rs/forge-std

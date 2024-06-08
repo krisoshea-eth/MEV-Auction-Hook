@@ -16,6 +16,7 @@ import {Hooks} from "v4-core/libraries/Hooks.sol";
 import {TickMath} from "v4-core/libraries/TickMath.sol";
 
 import {MevAuctionHook} from "../src/MevAuctionHook.sol";
+import {MevAuctionTaskManager} from "../../mev-auction-avs/contracts/src/MevAuctionTaskManager.sol";
 import {HookMiner} from "./utils/HookMiner.sol";
 
 contract TestMevAuctionHook is Test, Deployers {
@@ -28,6 +29,8 @@ contract TestMevAuctionHook is Test, Deployers {
 	Currency tokenCurrency;
 
 	MevAuctionHook hook;
+    MevAuctionTaskManager public mevAuctionTaskManager;
+    PoolKey key;
 
 	function setUp() public {
         // Deploy PoolManager and Router contracts
@@ -40,11 +43,23 @@ contract TestMevAuctionHook is Test, Deployers {
         // Mint a bunch of TOKEN to ourselves and to address(1)
         token.mint(address(this), 1000 ether);
         token.mint(address(1), 1000 ether);
+
+        mevAuctionTaskManager = new MevAuctionTaskManager(
+            IRegistryCoordinator(address(0)),
+            10 // Replace with your desired task response window block
+        );
+
+        mevAuctionTaskManager.initialize(
+            IPauserRegistry(address(0)),
+            address(this),
+            address(this),
+            address(this)
+        );
     
         // Mine an address that has flags set for
         // the hook functions we want
         uint160 flags = uint160(
-            Hooks.AFTER_ADD_LIQUIDITY_FLAG | Hooks.AFTER_SWAP_FLAG
+            Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG
         );
         (, bytes32 salt) = HookMiner.find(
             address(this),
@@ -58,7 +73,8 @@ contract TestMevAuctionHook is Test, Deployers {
         hook = new MevAuctionHook{salt: salt}(
             manager,
             "Auction Token",
-            "TEST_MEV_AUCTION"
+            "TEST_MEV_AUCTION",
+            mevAuctionTaskManager
         );
     
         // Approve our TOKEN for spending on the swap router and modify liquidity router
@@ -81,8 +97,6 @@ contract TestMevAuctionHook is Test, Deployers {
         // Set no referrer in the hook data
         bytes memory hookData = hook.getHookData(address(0), address(this));
     
-        uint256 pointsBalanceOriginal = hook.balanceOf(address(this));
-    
         // How we landed on 0.003 ether here is based on computing value of x and y given
         // total value of delta L (liquidity delta) = 1 ether
         // This is done by computing x and y from the equation shown in Ticks and Q64.96 Numbers lesson
@@ -96,17 +110,6 @@ contract TestMevAuctionHook is Test, Deployers {
                 liquidityDelta: 1 ether
             }),
             hookData
-        );
-        uint256 pointsBalanceAfterAddLiquidity = hook.balanceOf(address(this));
-    
-        // The exact amount of ETH we're adding (x)
-        // is roughly 0.299535... ETH
-        // Our original POINTS balance was 0
-        // so after adding liquidity we should have roughly 0.299535... POINTS tokens
-        assertApproxEqAbs(
-            pointsBalanceAfterAddLiquidity - pointsBalanceOriginal,
-            2995354955910434,
-            0.0001 ether // error margin for precision loss
         );
     
         // Now we swap
@@ -127,10 +130,67 @@ contract TestMevAuctionHook is Test, Deployers {
             }),
             hookData
         );
-        uint256 pointsBalanceAfterSwap = hook.balanceOf(address(this));
-        assertEq(
-            pointsBalanceAfterSwap - pointsBalanceAfterAddLiquidity,
-            2 * 10 ** 14
+    }
+
+    function test_executeSwap() public {
+        // Assume an auction has already been created with taskId 1
+        uint32 taskId = 1;
+        bytes memory hookData = hook.getHookData(address(0), address(this));
+
+        // Simulate winning the auction
+        uint256 highestBid = 0.1 ether;
+        address highestBidder = address(this);
+
+        // Mock auction details
+        hook.swaps(taskId).originalSender = address(1);
+        hook.swaps(taskId).amountSpecified = 1 ether;
+        hook.swaps(taskId).isCompleted = false;
+        hook.swaps(taskId).bidAmount = highestBid;
+
+        // Execute swap
+        vm.prank(highestBidder);
+        hook.executeSwap{value: highestBid}(
+            taskId,
+            key,
+            IPoolManager.SwapParams({
+                zeroForOne: true,
+                amountSpecified: -0.001 ether, // Exact input for output swap
+                sqrtPriceLimitX96: TickMath.MIN_SQRT_RATIO + 1
+            })
         );
+
+        // Verify the swap was completed
+        assertTrue(hook.swaps(taskId).isCompleted);
+
+        // Verify the bid amount was stored
+        assertEq(hook.swaps(taskId).bidAmount, highestBid);
+    }
+
+    function test_afterSwapDistributeToLPs() public {
+        uint32 taskId = 1;
+        uint256 bidAmount = 0.1 ether;
+        bytes memory hookData = abi.encode(taskId, bidAmount);
+
+        // Mock swap completion
+        hook.swaps(taskId).isCompleted = true;
+
+        // Call afterSwap to trigger distribution
+        vm.prank(address(poolManager));
+        hook.afterSwap(
+            address(0),
+            key,
+            IPoolManager.SwapParams({
+                zeroForOne: true,
+                amountSpecified: -0.001 ether, // Exact input for output swap
+                sqrtPriceLimitX96: TickMath.MIN_SQRT_RATIO + 1
+            }),
+            BalanceDelta(0, 0),
+            hookData
+        );
+
+        // Check if distribution happened correctly
+        // This requires more detailed checks based on the state of liquidity providers
+        // Mock data for liquidity providers and verify their balances
+        // This is a placeholder and should be replaced with actual checks
     }
 }

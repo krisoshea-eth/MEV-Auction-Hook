@@ -10,15 +10,15 @@ import {RegistryCoordinator} from "@eigenlayer-middleware/src/RegistryCoordinato
 import {BLSSignatureChecker, IRegistryCoordinator} from "@eigenlayer-middleware/src/BLSSignatureChecker.sol";
 import {OperatorStateRetriever} from "@eigenlayer-middleware/src/OperatorStateRetriever.sol";
 import "@eigenlayer-middleware/src/libraries/BN254.sol";
-import "./IIncredibleSquaringTaskManager.sol";
+import "./IMevAuctionTaskManager.sol";
 
-contract IncredibleSquaringTaskManager is
+contract MevAuctionTaskManager is
     Initializable,
     OwnableUpgradeable,
     Pausable,
     BLSSignatureChecker,
     OperatorStateRetriever,
-    IIncredibleSquaringTaskManager
+    IMevAuctionTaskManager
 {
     using BN254 for BN254.G1Point;
 
@@ -31,6 +31,8 @@ contract IncredibleSquaringTaskManager is
     /* STORAGE */
     // The latest task index
     uint32 public latestTaskNum;
+    address public aggregator;
+    address public generator;
 
     // mapping of task indices to all tasks hashes
     // when a task is created, task hash is stored here,
@@ -43,8 +45,18 @@ contract IncredibleSquaringTaskManager is
 
     mapping(uint32 => bool) public taskSuccesfullyChallenged;
 
-    address public aggregator;
-    address public generator;
+    mapping(uint32 => Auction) public auctions;
+
+    event NewTaskCreated(uint32 taskId, Auction auction);
+    event NewBidSubmitted(uint32 taskId, address bidder, uint256 bidAmount);
+    event AuctionCompleted(uint32 taskId, address highestBidder, uint256 highestBid);
+
+    struct Auction {
+        uint256 highestBid;
+        address highestBidder;
+        uint256 endTime;
+        bool completed;
+    }
 
     /* MODIFIERS */
     modifier onlyAggregator() {
@@ -79,23 +91,63 @@ contract IncredibleSquaringTaskManager is
     }
 
     /* FUNCTIONS */
-    // NOTE: this function creates new task, assigns it a taskId
+    // NOTE: this function creates new auction task, assigns it a taskId
     function createNewTask(
-        uint256 numberToBeSquared,
+        uint256 auctionDuration,
         uint32 quorumThresholdPercentage,
         bytes calldata quorumNumbers
     ) external onlyTaskGenerator {
         // create a new task struct
         Task memory newTask;
-        newTask.numberToBeSquared = numberToBeSquared;
+        newTask.auctionDuration = auctionDuration;
         newTask.taskCreatedBlock = uint32(block.number);
         newTask.quorumThresholdPercentage = quorumThresholdPercentage;
         newTask.quorumNumbers = quorumNumbers;
 
         // store hash of task onchain, emit event, and increase taskNum
         allTaskHashes[latestTaskNum] = keccak256(abi.encode(newTask));
-        emit NewTaskCreated(latestTaskNum, newTask);
+        
+
+         // Start auction
+         auctions[latestTaskNum] = Auction({
+            highestBid: 0,
+            highestBidder: address(0),
+            endTime: block.timestamp + auctionDuration,
+            completed: false
+        });
+
+        emit NewTaskCreated(latestTaskNum, auctions[latestTaskNum]);
+
         latestTaskNum = latestTaskNum + 1;
+    }
+
+    function submitBid(uint32 taskId, uint256 bidAmount) external {
+        Auction storage auction = auctions[taskId];
+        require(block.timestamp <= auction.endTime, "Auction has ended");
+        require(bidAmount > auction.highestBid, "Bid is not higher than current highest bid");
+
+        auction.highestBid = bidAmount;
+        auction.highestBidder = msg.sender;
+
+        emit NewBidSubmitted(taskId, msg.sender, bidAmount);
+    }
+
+    function completeAuction(uint32 taskId) external {
+        Auction storage auction = auctions[taskId];
+        require(block.timestamp > auction.endTime, "Auction is still ongoing");
+        require(!auction.completed, "Auction already completed");
+
+        auction.completed = true;
+
+        // Logic to allow the highest bidder to carry out the swap
+        // This could involve calling another function to grant permissions or trigger the swap
+
+
+        emit AuctionCompleted(taskId, auction.highestBidder, auction.highestBid);
+    }
+
+    function getAuctionDetails(uint32 taskId) external view returns (Auction memory) {
+        return auctions[taskId];
     }
 
     // NOTE: this function responds to existing tasks.

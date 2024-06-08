@@ -13,3 +13,15 @@ docs/
 
 # Not sure what this folder is for.. so removing for now
 data/
+
+# Ignore everything in the contracts/lib/eigenlayer-middleware directory
+contracts/lib/eigenlayer-middleware/*
+!contracts/lib/eigenlayer-middleware/.gitkeep
+
+# Ignore everything in the contracts/lib/forge-std directory
+contracts/lib/forge-std/*
+!contracts/lib/forge-std/.gitkeep
+
+# Ignore everything in the contracts/lib/openzeppelin-contracts directory
+contracts/lib/openzeppelin-contracts/*
+!contracts/lib/openzeppelin-contracts/.gitkeep

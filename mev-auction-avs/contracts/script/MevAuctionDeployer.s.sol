@@ -18,9 +18,9 @@ import {IndexRegistry} from "@eigenlayer-middleware/src/IndexRegistry.sol";
 import {StakeRegistry} from "@eigenlayer-middleware/src/StakeRegistry.sol";
 import "@eigenlayer-middleware/src/OperatorStateRetriever.sol";
 
-import {IncredibleSquaringServiceManager, IServiceManager} from "../src/IncredibleSquaringServiceManager.sol";
-import {IncredibleSquaringTaskManager} from "../src/IncredibleSquaringTaskManager.sol";
-import {IIncredibleSquaringTaskManager} from "../src/IIncredibleSquaringTaskManager.sol";
+import {MevAuctionServiceManager, IServiceManager} from "../src/MevAuctionServiceManager.sol";
+import {MevAuctionTaskManager} from "../src/MevAuctionTaskManager.sol";
+import {IMevAuctionTaskManager} from "../src/IMevAuctionTaskManager.sol";
 import "../src/ERC20Mock.sol";
 
 import {Utils} from "./utils/Utils.sol";
@@ -31,8 +31,8 @@ import "forge-std/StdJson.sol";
 import "forge-std/console.sol";
 
 // # To deploy and verify our contract
-// forge script script/CredibleSquaringDeployer.s.sol:CredibleSquaringDeployer --rpc-url $RPC_URL  --private-key $PRIVATE_KEY --broadcast -vvvv
-contract IncredibleSquaringDeployer is Script, Utils {
+// forge script script/MevAuctionDeployer.s.sol:MevAuctionDeployer --rpc-url $RPC_URL  --private-key $PRIVATE_KEY --broadcast -vvvv
+contract MevAuctionDeployer is Script, Utils {
     // DEPLOYMENT CONSTANTS
     uint256 public constant QUORUM_THRESHOLD_PERCENTAGE = 100;
     uint32 public constant TASK_RESPONSE_WINDOW_BLOCK = 30;
@@ -49,8 +49,8 @@ contract IncredibleSquaringDeployer is Script, Utils {
     StrategyBaseTVLLimits public erc20MockStrategy;
 
     // Credible Squaring contracts
-    ProxyAdmin public incredibleSquaringProxyAdmin;
-    PauserRegistry public incredibleSquaringPauserReg;
+    ProxyAdmin public mevAuctionProxyAdmin;
+    PauserRegistry public mevAuctionPauserReg;
 
     regcoord.RegistryCoordinator public registryCoordinator;
     regcoord.IRegistryCoordinator public registryCoordinatorImplementation;
@@ -66,12 +66,12 @@ contract IncredibleSquaringDeployer is Script, Utils {
 
     OperatorStateRetriever public operatorStateRetriever;
 
-    IncredibleSquaringServiceManager public incredibleSquaringServiceManager;
-    IServiceManager public incredibleSquaringServiceManagerImplementation;
+    MevAuctionServiceManager public mevAuctionServiceManager;
+    IServiceManager public mevAuctionServiceManagerImplementation;
 
-    IncredibleSquaringTaskManager public incredibleSquaringTaskManager;
-    IIncredibleSquaringTaskManager
-        public incredibleSquaringTaskManagerImplementation;
+    MevAuctionTaskManager public mevAuctionTaskManager;
+    IMevAuctionTaskManager
+        public mevAuctionTaskManagerImplementation;
 
     function run() external {
         // Eigenlayer contracts
@@ -173,7 +173,7 @@ contract IncredibleSquaringDeployer is Script, Utils {
         IDelegationManager delegationManager,
         IAVSDirectory avsDirectory,
         IStrategy strat,
-        address incredibleSquaringCommunityMultisig,
+        address mevAuctionCommunityMultisig,
         address credibleSquaringPauser
     ) internal {
         // Adding this as a temporary fix to make the rest of the script work with a single strategy
@@ -182,16 +182,16 @@ contract IncredibleSquaringDeployer is Script, Utils {
         uint numStrategies = deployedStrategyArray.length;
 
         // deploy proxy admin for ability to upgrade proxy contracts
-        incredibleSquaringProxyAdmin = new ProxyAdmin();
+        mevAuctionProxyAdmin = new ProxyAdmin();
 
         // deploy pauser registry
         {
             address[] memory pausers = new address[](2);
             pausers[0] = credibleSquaringPauser;
-            pausers[1] = incredibleSquaringCommunityMultisig;
-            incredibleSquaringPauserReg = new PauserRegistry(
+            pausers[1] = mevAuctionCommunityMultisig;
+            mevAuctionPauserReg = new PauserRegistry(
                 pausers,
-                incredibleSquaringCommunityMultisig
+                mevAuctionCommunityMultisig
             );
         }
 
@@ -203,20 +203,20 @@ contract IncredibleSquaringDeployer is Script, Utils {
          * First, deploy upgradeable proxy contracts that **will point** to the implementations. Since the implementation contracts are
          * not yet deployed, we give these proxies an empty contract as the initial implementation, to act as if they have no code.
          */
-        incredibleSquaringServiceManager = IncredibleSquaringServiceManager(
+        mevAuctionServiceManager = MevAuctionServiceManager(
             address(
                 new TransparentUpgradeableProxy(
                     address(emptyContract),
-                    address(incredibleSquaringProxyAdmin),
+                    address(mevAuctionProxyAdmin),
                     ""
                 )
             )
         );
-        incredibleSquaringTaskManager = IncredibleSquaringTaskManager(
+        mevAuctionTaskManager = MevAuctionTaskManager(
             address(
                 new TransparentUpgradeableProxy(
                     address(emptyContract),
-                    address(incredibleSquaringProxyAdmin),
+                    address(mevAuctionProxyAdmin),
                     ""
                 )
             )
@@ -225,7 +225,7 @@ contract IncredibleSquaringDeployer is Script, Utils {
             address(
                 new TransparentUpgradeableProxy(
                     address(emptyContract),
-                    address(incredibleSquaringProxyAdmin),
+                    address(mevAuctionProxyAdmin),
                     ""
                 )
             )
@@ -234,7 +234,7 @@ contract IncredibleSquaringDeployer is Script, Utils {
             address(
                 new TransparentUpgradeableProxy(
                     address(emptyContract),
-                    address(incredibleSquaringProxyAdmin),
+                    address(mevAuctionProxyAdmin),
                     ""
                 )
             )
@@ -243,7 +243,7 @@ contract IncredibleSquaringDeployer is Script, Utils {
             address(
                 new TransparentUpgradeableProxy(
                     address(emptyContract),
-                    address(incredibleSquaringProxyAdmin),
+                    address(mevAuctionProxyAdmin),
                     ""
                 )
             )
@@ -252,7 +252,7 @@ contract IncredibleSquaringDeployer is Script, Utils {
             address(
                 new TransparentUpgradeableProxy(
                     address(emptyContract),
-                    address(incredibleSquaringProxyAdmin),
+                    address(mevAuctionProxyAdmin),
                     ""
                 )
             )
@@ -267,7 +267,7 @@ contract IncredibleSquaringDeployer is Script, Utils {
                 delegationManager
             );
 
-            incredibleSquaringProxyAdmin.upgrade(
+            mevAuctionProxyAdmin.upgrade(
                 TransparentUpgradeableProxy(payable(address(stakeRegistry))),
                 address(stakeRegistryImplementation)
             );
@@ -276,7 +276,7 @@ contract IncredibleSquaringDeployer is Script, Utils {
                 registryCoordinator
             );
 
-            incredibleSquaringProxyAdmin.upgrade(
+            mevAuctionProxyAdmin.upgrade(
                 TransparentUpgradeableProxy(payable(address(blsApkRegistry))),
                 address(blsApkRegistryImplementation)
             );
@@ -285,14 +285,14 @@ contract IncredibleSquaringDeployer is Script, Utils {
                 registryCoordinator
             );
 
-            incredibleSquaringProxyAdmin.upgrade(
+            mevAuctionProxyAdmin.upgrade(
                 TransparentUpgradeableProxy(payable(address(indexRegistry))),
                 address(indexRegistryImplementation)
             );
         }
 
         registryCoordinatorImplementation = new regcoord.RegistryCoordinator(
-            incredibleSquaringServiceManager,
+            mevAuctionServiceManager,
             regcoord.IStakeRegistry(address(stakeRegistry)),
             regcoord.IBLSApkRegistry(address(blsApkRegistry)),
             regcoord.IIndexRegistry(address(indexRegistry))
@@ -338,7 +338,7 @@ contract IncredibleSquaringDeployer is Script, Utils {
                         });
                 }
             }
-            incredibleSquaringProxyAdmin.upgradeAndCall(
+            mevAuctionProxyAdmin.upgradeAndCall(
                 TransparentUpgradeableProxy(
                     payable(address(registryCoordinator))
                 ),
@@ -346,10 +346,10 @@ contract IncredibleSquaringDeployer is Script, Utils {
                 abi.encodeWithSelector(
                     regcoord.RegistryCoordinator.initialize.selector,
                     // we set churnApprover and ejector to communityMultisig because we don't need them
-                    incredibleSquaringCommunityMultisig,
-                    incredibleSquaringCommunityMultisig,
-                    incredibleSquaringCommunityMultisig,
-                    incredibleSquaringPauserReg,
+                    mevAuctionCommunityMultisig,
+                    mevAuctionCommunityMultisig,
+                    mevAuctionCommunityMultisig,
+                    mevAuctionPauserReg,
                     0, // 0 initialPausedStatus means everything unpaused
                     quorumsOperatorSetParams,
                     quorumsMinimumStake,
@@ -358,35 +358,35 @@ contract IncredibleSquaringDeployer is Script, Utils {
             );
         }
 
-        incredibleSquaringServiceManagerImplementation = new IncredibleSquaringServiceManager(
+        mevAuctionServiceManagerImplementation = new MevAuctionServiceManager(
             avsDirectory,
             registryCoordinator,
             stakeRegistry,
-            incredibleSquaringTaskManager
+            mevAuctionTaskManager
         );
         // Third, upgrade the proxy contracts to use the correct implementation contracts and initialize them.
-        incredibleSquaringProxyAdmin.upgrade(
+        mevAuctionProxyAdmin.upgrade(
             TransparentUpgradeableProxy(
-                payable(address(incredibleSquaringServiceManager))
+                payable(address(mevAuctionServiceManager))
             ),
-            address(incredibleSquaringServiceManagerImplementation)
+            address(mevAuctionServiceManagerImplementation)
         );
 
-        incredibleSquaringTaskManagerImplementation = new IncredibleSquaringTaskManager(
+        mevAuctionTaskManagerImplementation = new MevAuctionTaskManager(
             registryCoordinator,
             TASK_RESPONSE_WINDOW_BLOCK
         );
 
         // Third, upgrade the proxy contracts to use the correct implementation contracts and initialize them.
-        incredibleSquaringProxyAdmin.upgradeAndCall(
+        mevAuctionProxyAdmin.upgradeAndCall(
             TransparentUpgradeableProxy(
-                payable(address(incredibleSquaringTaskManager))
+                payable(address(mevAuctionTaskManager))
             ),
-            address(incredibleSquaringTaskManagerImplementation),
+            address(mevAuctionTaskManagerImplementation),
             abi.encodeWithSelector(
-                incredibleSquaringTaskManager.initialize.selector,
-                incredibleSquaringPauserReg,
-                incredibleSquaringCommunityMultisig,
+                mevAuctionTaskManager.initialize.selector,
+                mevAuctionPauserReg,
+                mevAuctionCommunityMultisig,
                 AGGREGATOR_ADDR,
                 TASK_GENERATOR_ADDR
             )
@@ -409,22 +409,22 @@ contract IncredibleSquaringDeployer is Script, Utils {
         vm.serializeAddress(
             deployed_addresses,
             "credibleSquaringServiceManager",
-            address(incredibleSquaringServiceManager)
+            address(mevAuctionServiceManager)
         );
         vm.serializeAddress(
             deployed_addresses,
             "credibleSquaringServiceManagerImplementation",
-            address(incredibleSquaringServiceManagerImplementation)
+            address(mevAuctionServiceManagerImplementation)
         );
         vm.serializeAddress(
             deployed_addresses,
             "credibleSquaringTaskManager",
-            address(incredibleSquaringTaskManager)
+            address(mevAuctionTaskManager)
         );
         vm.serializeAddress(
             deployed_addresses,
             "credibleSquaringTaskManagerImplementation",
-            address(incredibleSquaringTaskManagerImplementation)
+            address(mevAuctionTaskManagerImplementation)
         );
         vm.serializeAddress(
             deployed_addresses,

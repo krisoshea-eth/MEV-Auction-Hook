@@ -46,18 +46,7 @@ contract MevAuctionTaskManager is
     mapping(uint32 => bool) public taskSuccesfullyChallenged;
 
     mapping(uint32 => Auction) public auctions;
-
-    event NewTaskCreated(uint32 taskId, Auction auction);
-    event NewBidSubmitted(uint32 taskId, address bidder, uint256 bidAmount);
-    event AuctionCompleted(uint32 taskId, address highestBidder, uint256 highestBid);
-
-    struct Auction {
-        uint256 highestBid;
-        address highestBidder;
-        uint256 endTime;
-        bool completed;
-    }
-
+   
     /* MODIFIERS */
     modifier onlyAggregator() {
         require(msg.sender == aggregator, "Aggregator must be the caller");
@@ -232,7 +221,7 @@ contract MevAuctionTaskManager is
         BN254.G1Point[] memory pubkeysOfNonSigningOperators
     ) external {
         uint32 referenceTaskIndex = taskResponse.referenceTaskIndex;
-        uint256 numberToBeSquared = task.numberToBeSquared;
+    
         // some logical checks
         require(
             allTaskResponses[referenceTaskIndex] != bytes32(0),
@@ -255,16 +244,16 @@ contract MevAuctionTaskManager is
             "The challenge period for this task has already expired."
         );
 
-        // logic for checking whether challenge is valid or not
-        uint256 actualSquaredOutput = numberToBeSquared * numberToBeSquared;
-        bool isResponseCorrect = (actualSquaredOutput ==
-            taskResponse.numberSquared);
+        // // logic for checking whether challenge is valid or not
+        // uint256 actualSquaredOutput = numberToBeSquared * numberToBeSquared;
+        // bool isResponseCorrect = (actualSquaredOutput ==
+        //     taskResponse.numberSquared);
 
-        // if response was correct, no slashing happens so we return
-        if (isResponseCorrect == true) {
-            emit TaskChallengedUnsuccessfully(referenceTaskIndex, msg.sender);
-            return;
-        }
+        // // if response was correct, no slashing happens so we return
+        // if (isResponseCorrect == true) {
+        //     emit TaskChallengedUnsuccessfully(referenceTaskIndex, msg.sender);
+        //     return;
+        // }
 
         // get the list of hash of pubkeys of operators who weren't part of the task response submitted by the aggregator
         bytes32[] memory hashesOfPubkeysOfNonSigningOperators = new bytes32[](

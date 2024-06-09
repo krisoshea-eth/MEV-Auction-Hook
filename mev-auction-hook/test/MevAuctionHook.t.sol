@@ -26,9 +26,11 @@ import {IPauserRegistry} from "../mev-auction-avs/contracts/lib/eigenlayer-middl
 import {BLSMockAVSDeployer} from "../mev-auction-avs/contracts/lib/eigenlayer-middleware/test/utils/BLSMockAVSDeployer.sol";
 import {HookMiner} from "./utils/HookMiner.sol";
 import {TransparentUpgradeableProxy} from "../mev-auction-avs/contracts/lib/eigenlayer-middleware/lib/openzeppelin-contracts/contracts/proxy/transparent/TransparentUpgradeableProxy.sol";
-import {Address} from "../mev-auction-avs/contracts/lib/eigenlayer-middleware/lib/openzeppelin-contracts/contracts/utils/Address.sol";
+// import {Address} from "../mev-auction-avs/contracts/lib/eigenlayer-middleware/lib/openzeppelin-contracts/contracts/utils/Address.sol";
+import {AddressAliased} from "../lib/v4-periphery/lib/openzeppelin-contracts/contracts/utils/AddressAliased.sol";
 
 contract TestMevAuctionHook is Test, Deployers {
+    using AddressAliased for address;
     MevAuctionServiceManager sm;
     MevAuctionServiceManager smImplementation;
     MevAuctionTaskManager tm;
@@ -107,19 +109,25 @@ contract TestMevAuctionHook is Test, Deployers {
         token.mint(address(this), 1000 ether);
         token.mint(address(1), 1000 ether);
     
-        // Mine an address that has flags set for
-        // the hook functions we want
-        uint160 flags = uint160(
-            Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG
-        );
-        (, bytes32 salt) = HookMiner.find(
+        // Mine an address that has flags set for the hook functions we want
+        uint160 flags = uint160(Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG | Hooks.AFTER_SWAP_RETURNS_DELTA_FLAG);
+
+        // Generate creation code with constructor arguments
+        bytes memory creationCode = type(MevAuctionHook).creationCode;
+        bytes memory constructorArgs = abi.encode(address(manager), "Auction Token", "TEST_MEV_AUCTION", address(tm));
+        bytes memory creationCodeWithArgs = abi.encodePacked(creationCode, constructorArgs);
+
+        (address hookAddress, bytes32 salt) = HookMiner.find(
             address(this),
             flags,
-            0,
-            type(MevAuctionHook).creationCode,
-            abi.encode(manager, "Auction Token", "TEST_MEV_AUCTION")
+            creationCode,
+            constructorArgs
         );
-    
+
+         // Verify the hook address
+         require(uint160(hookAddress) & HookMiner.FLAG_MASK == flags, "Invalid hook address generated");
+         emit log_named_address("Hook Address", hookAddress);
+
         // Deploy our hook
         hook = new MevAuctionHook{salt: salt}(
             manager,
@@ -127,6 +135,9 @@ contract TestMevAuctionHook is Test, Deployers {
             "TEST_MEV_AUCTION",
             tm
         );
+
+        // Ensure the deployed address matches the mined address
+        require(hookAddress == address(hook), "Deployed hook address does not match mined address");
     
         // Approve our TOKEN for spending on the swap router and modify liquidity router
         // These variables are coming from the `Deployers` contract

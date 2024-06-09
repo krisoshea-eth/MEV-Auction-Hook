@@ -56,6 +56,8 @@ contract MevAuctionHook is BaseHook, ERC20 {
         IMevAuctionTaskManager _mevAuctionTaskManager
     ) BaseHook(_poolManager) ERC20(_name, _symbol, 18) {
         mevAuctionTaskManager = _mevAuctionTaskManager;
+        // // Validate hook permissions during deployment
+        // Hooks.validateHookPermissions(this, getHookPermissions());
     }
 
 	// Set up hook permissions to return `true`

@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: BUSL-1.1
 pragma solidity ^0.8.12;
 
-import "@openzeppelin/contracts/proxy/transparent/ProxyAdmin.sol";
-import "@openzeppelin/contracts/proxy/transparent/TransparentUpgradeableProxy.sol";
+import "../../lib/openzeppelin-contracts/contracts/proxy/transparent/ProxyAdmin.sol";
+import "../../lib/openzeppelin-contracts/contracts/proxy/transparent/TransparentUpgradeableProxy.sol";
 
 import {Slasher} from "eigenlayer-contracts/src/contracts/core/Slasher.sol";
 import {ISlasher} from "eigenlayer-contracts/src/contracts/interfaces/ISlasher.sol";

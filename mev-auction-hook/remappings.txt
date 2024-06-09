@@ -11,3 +11,12 @@ openzeppelin/=lib/v4-periphery/lib/openzeppelin-contracts/contracts/
 solmate/=lib/v4-periphery/lib/solmate/src/
 v4-core/=lib/v4-periphery/lib/v4-core/src/
 v4-periphery/=lib/v4-periphery/contracts/
+
+@eigenlayer/=../mev-auction-avs/contracts/lib/eigenlayer-middleware/lib/eigenlayer-contracts/src/
+@eigenlayer-scripts/=../mev-auction-avs/contracts/lib/eigenlayer-middleware/lib/eigenlayer-contracts/script/
+@eigenlayer-middleware/=../mev-auction-avs/contracts/lib/eigenlayer-middleware/
+@credible-squaring/=../mev-auction-avs/contracts/src/
+@openzeppelin-upgrades/=../mev-auction-avs/contracts/lib/eigenlayer-middleware/lib/eigenlayer-contracts/lib/openzeppelin-contracts-upgradeable/
+eigenlayer-contracts/=../mev-auction-avs/contracts/lib/eigenlayer-middleware/lib/eigenlayer-contracts/
+eigenlayer-middleware/=../mev-auction-avs/contracts/lib/eigenlayer-middleware/
+openzeppelin-contracts-upgradeable/=../mev-auction-avs/contracts/lib/eigenlayer-middleware/lib/openzeppelin-contracts-upgradeable/

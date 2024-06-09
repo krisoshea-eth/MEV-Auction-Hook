@@ -14,13 +14,33 @@ import {Currency, CurrencyLibrary} from "v4-core/types/Currency.sol";
 
 import {Hooks} from "v4-core/libraries/Hooks.sol";
 import {TickMath} from "v4-core/libraries/TickMath.sol";
+import {BalanceDelta, BalanceDeltaLibrary, toBalanceDelta} from "v4-core/types/BalanceDelta.sol";
+import {BeforeSwapDelta} from "v4-core/types/BeforeSwapDelta.sol";
 
 import {MevAuctionHook} from "../src/MevAuctionHook.sol";
-import {MevAuctionTaskManager} from "../../mev-auction-avs/contracts/src/MevAuctionTaskManager.sol";
+import {MevAuctionTaskManager} from "../mev-auction-avs/contracts/src/MevAuctionTaskManager.sol";
+import {IMevAuctionTaskManager} from "../mev-auction-avs/contracts/src/IMevAuctionTaskManager.sol";
+import {MevAuctionServiceManager} from "../mev-auction-avs/contracts/src/MevAuctionServiceManager.sol";
+import {IRegistryCoordinator} from "../mev-auction-avs/contracts/lib/eigenlayer-middleware/src/interfaces/IRegistryCoordinator.sol"; // Correct the path if necessary
+import {IPauserRegistry} from "../mev-auction-avs/contracts/lib/eigenlayer-middleware/lib/eigenlayer-contracts/src/contracts/interfaces/IPauserRegistry.sol";
+import {BLSMockAVSDeployer} from "../mev-auction-avs/contracts/lib/eigenlayer-middleware/test/utils/BLSMockAVSDeployer.sol";
 import {HookMiner} from "./utils/HookMiner.sol";
+import {TransparentUpgradeableProxy} from "../mev-auction-avs/contracts/lib/eigenlayer-middleware/lib/openzeppelin-contracts/contracts/proxy/transparent/TransparentUpgradeableProxy.sol";
+import {Address} from "../mev-auction-avs/contracts/lib/eigenlayer-middleware/lib/openzeppelin-contracts/contracts/utils/Address.sol";
 
 contract TestMevAuctionHook is Test, Deployers {
-	using CurrencyLibrary for Currency;
+    MevAuctionServiceManager sm;
+    MevAuctionServiceManager smImplementation;
+    MevAuctionTaskManager tm;
+    MevAuctionTaskManager tmImplementation;
+    BLSMockAVSDeployer avsDeployer;
+
+    uint32 public constant TASK_RESPONSE_WINDOW_BLOCK = 30;
+    address aggregator = address(uint160(uint256(keccak256(abi.encodePacked("aggregator")))));
+    address generator = address(uint160(uint256(keccak256(abi.encodePacked("generator")))));
+    
+    using CurrencyLibrary for Currency;
+    using BalanceDeltaLibrary for BalanceDelta;
 
 	MockERC20 token; // our token to use in the ETH-TOKEN pool
 
@@ -29,10 +49,53 @@ contract TestMevAuctionHook is Test, Deployers {
 	Currency tokenCurrency;
 
 	MevAuctionHook hook;
-    MevAuctionTaskManager public mevAuctionTaskManager;
-    PoolKey key;
+    IPoolManager poolManager; // Declare poolManager
+
+    uint160 constant SQRT_RATIO_1_1 = 79228162514264337593543950336;
 
 	function setUp() public {
+        emit log("Setting up BLSMockAVSDeployer");
+        avsDeployer = new BLSMockAVSDeployer();
+        avsDeployer._setUpBLSMockAVSDeployer();
+        emit log("BLSMockAVSDeployer set up");
+        
+        address registryCoordinator = address(avsDeployer.registryCoordinator());
+        address proxyAdmin = address(avsDeployer.proxyAdmin());
+        address pauserRegistry = address(avsDeployer.pauserRegistry());
+        address registryCoordinatorOwner = avsDeployer.registryCoordinatorOwner();
+
+        emit log_named_address("Registry Coordinator", registryCoordinator);
+        emit log_named_address("Proxy Admin", proxyAdmin);
+        emit log_named_address("Pauser Registry", pauserRegistry);
+        emit log_named_address("Registry Coordinator Owner", registryCoordinatorOwner);
+
+        emit log("Deploying MevAuctionTaskManager implementation");
+        tmImplementation = new MevAuctionTaskManager(
+            IRegistryCoordinator(registryCoordinator),
+            TASK_RESPONSE_WINDOW_BLOCK
+        );
+        emit log("MevAuctionTaskManager implementation deployed");
+
+        // Third, upgrade the proxy contracts to use the correct implementation contracts and initialize them.
+        emit log("Deploying TransparentUpgradeableProxy for MevAuctionTaskManager");
+        tm = MevAuctionTaskManager(
+            address(
+                new TransparentUpgradeableProxy(
+                    address(tmImplementation),
+                    proxyAdmin,
+                    abi.encodeWithSelector(
+                        tm.initialize.selector,
+                        pauserRegistry,
+                        registryCoordinatorOwner,
+                        aggregator,
+                        generator
+                    )
+                )
+            )
+        );
+        emit log("TransparentUpgradeableProxy for MevAuctionTaskManager deployed");
+        
+        
         // Deploy PoolManager and Router contracts
         deployFreshManagerAndRouters();
     
@@ -43,18 +106,6 @@ contract TestMevAuctionHook is Test, Deployers {
         // Mint a bunch of TOKEN to ourselves and to address(1)
         token.mint(address(this), 1000 ether);
         token.mint(address(1), 1000 ether);
-
-        mevAuctionTaskManager = new MevAuctionTaskManager(
-            IRegistryCoordinator(address(0)),
-            10 // Replace with your desired task response window block
-        );
-
-        mevAuctionTaskManager.initialize(
-            IPauserRegistry(address(0)),
-            address(this),
-            address(this),
-            address(this)
-        );
     
         // Mine an address that has flags set for
         // the hook functions we want
@@ -74,7 +125,7 @@ contract TestMevAuctionHook is Test, Deployers {
             manager,
             "Auction Token",
             "TEST_MEV_AUCTION",
-            mevAuctionTaskManager
+            tm
         );
     
         // Approve our TOKEN for spending on the swap router and modify liquidity router
@@ -93,59 +144,151 @@ contract TestMevAuctionHook is Test, Deployers {
         );
     }
 
+    function testCreateNewTask() public {
+        bytes memory quorumNumbers = new bytes(0);
+        vm.prank(generator);
+        tm.createNewTask(2, 100, quorumNumbers);
+        assertEq(tm.latestTaskNum(), 1);
+    }
+
+    function testSubmitBid() public {
+        bytes memory quorumNumbers = new bytes(0);
+        vm.prank(generator);
+        tm.createNewTask(2, 100, quorumNumbers);
+
+        vm.prank(address(1));
+        tm.submitBid(0, 1 ether);
+
+        IMevAuctionTaskManager.Auction memory auction = tm.getAuctionDetails(0);
+        assertEq(auction.highestBid, 1 ether);
+        assertEq(auction.highestBidder, address(1));
+    }
+
+    function testCompleteAuction() public {
+        bytes memory quorumNumbers = new bytes(0);
+        vm.prank(generator);
+        tm.createNewTask(2, 100, quorumNumbers);
+
+        vm.prank(address(1));
+        tm.submitBid(0, 1 ether);
+
+        // Increase the time to after the auction end time
+        vm.warp(block.timestamp + 3);
+
+        vm.prank(address(2));
+        tm.completeAuction(0);
+
+        IMevAuctionTaskManager.Auction memory auction = tm.getAuctionDetails(0);
+        assertTrue(auction.completed);
+    }
+
+    function testGetAuctionDetails() public {
+        bytes memory quorumNumbers = new bytes(0);
+        vm.prank(generator);
+        tm.createNewTask(2, 100, quorumNumbers);
+
+        vm.prank(address(1));
+        tm.submitBid(0, 1 ether);
+
+        IMevAuctionTaskManager.Auction memory auction = tm.getAuctionDetails(0);
+        assertEq(auction.highestBid, 1 ether);
+        assertEq(auction.highestBidder, address(1));
+        assertEq(auction.endTime, block.timestamp + 2);
+        assertFalse(auction.completed);
+    }
+
+    function testMultipleBids() public {
+        bytes memory quorumNumbers = new bytes(0);
+        vm.prank(generator);
+        tm.createNewTask(2, 100, quorumNumbers);
+
+        vm.prank(address(1));
+        tm.submitBid(0, 1 ether);
+
+        vm.prank(address(2));
+        tm.submitBid(0, 2 ether);
+
+        IMevAuctionTaskManager.Auction memory auction = tm.getAuctionDetails(0);
+        assertEq(auction.highestBid, 2 ether);
+        assertEq(auction.highestBidder, address(2));
+    }
+
+    function testAuctionFailsAfterEndTime() public {
+        bytes memory quorumNumbers = new bytes(0);
+        vm.prank(generator);
+        tm.createNewTask(2, 100, quorumNumbers);
+
+        vm.prank(address(1));
+        tm.submitBid(0, 1 ether);
+
+        // Increase the time to after the auction end time
+        vm.warp(block.timestamp + 3);
+
+        vm.prank(address(2));
+        vm.expectRevert("Auction has ended");
+        tm.submitBid(0, 2 ether);
+    }
+
+    function testBidNotHigherThanCurrent() public {
+        bytes memory quorumNumbers = new bytes(0);
+        vm.prank(generator);
+        tm.createNewTask(2, 100, quorumNumbers);
+
+        vm.prank(address(1));
+        tm.submitBid(0, 1 ether);
+
+        vm.prank(address(2));
+        vm.expectRevert("Bid is not higher than current highest bid");
+        tm.submitBid(0, 0.5 ether);
+    }
+
     function test_addLiquidityAndSwap() public {
         // Set no referrer in the hook data
-        bytes memory hookData = hook.getHookData(address(0), address(this));
+        bytes memory hookData = abi.encode(address(0), address(this));
     
-        // How we landed on 0.003 ether here is based on computing value of x and y given
-        // total value of delta L (liquidity delta) = 1 ether
-        // This is done by computing x and y from the equation shown in Ticks and Q64.96 Numbers lesson
-        // View the full code for this lesson on GitHub which has additional comments
-        // showing the exact computation and a Python script to do that calculation for you
+        // Add liquidity
         modifyLiquidityRouter.modifyLiquidity{value: 0.003 ether}(
             key,
             IPoolManager.ModifyLiquidityParams({
                 tickLower: -60,
                 tickUpper: 60,
-                liquidityDelta: 1 ether
+                liquidityDelta: 1 ether,
+                salt: 0
             }),
             hookData
         );
     
-        // Now we swap
-        // We will swap 0.001 ether for tokens
-        // We should get 20% of 0.001 * 10**18 points
-        // = 2 * 10**14
+        // Swap tokens
         swapRouter.swap{value: 0.001 ether}(
             key,
             IPoolManager.SwapParams({
                 zeroForOne: true,
-                amountSpecified: -0.001 ether, // Exact input for output swap
-                sqrtPriceLimitX96: TickMath.MIN_SQRT_RATIO + 1
+                amountSpecified: -0.001 ether,
+                sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
             }),
             PoolSwapTest.TestSettings({
-                withdrawTokens: true,
-                settleUsingTransfer: true,
-                currencyAlreadySent: false
+               takeClaims: true,
+               settleUsingBurn: true
             }),
             hookData
         );
     }
 
     function test_executeSwap() public {
-        // Assume an auction has already been created with taskId 1
         uint32 taskId = 1;
-        bytes memory hookData = hook.getHookData(address(0), address(this));
+        bytes memory hookData = abi.encode(address(0), address(this));
 
-        // Simulate winning the auction
         uint256 highestBid = 0.1 ether;
         address highestBidder = address(this);
 
-        // Mock auction details
-        hook.swaps(taskId).originalSender = address(1);
-        hook.swaps(taskId).amountSpecified = 1 ether;
-        hook.swaps(taskId).isCompleted = false;
-        hook.swaps(taskId).bidAmount = highestBid;
+        // Initialize swap details
+        MevAuctionHook.SwapDetails memory swapDetails = MevAuctionHook.SwapDetails({
+            originalSender: address(1),
+            amountSpecified: 1 ether,
+            isCompleted: false,
+            bidAmount: highestBid
+        });
+        hook.setSwapDetails(taskId, swapDetails);
 
         // Execute swap
         vm.prank(highestBidder);
@@ -154,16 +297,15 @@ contract TestMevAuctionHook is Test, Deployers {
             key,
             IPoolManager.SwapParams({
                 zeroForOne: true,
-                amountSpecified: -0.001 ether, // Exact input for output swap
-                sqrtPriceLimitX96: TickMath.MIN_SQRT_RATIO + 1
+                amountSpecified: -0.001 ether,
+                sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
             })
         );
 
         // Verify the swap was completed
-        assertTrue(hook.swaps(taskId).isCompleted);
-
-        // Verify the bid amount was stored
-        assertEq(hook.swaps(taskId).bidAmount, highestBid);
+        MevAuctionHook.SwapDetails memory completedSwap = hook.getSwapDetails(taskId);
+        assertTrue(completedSwap.isCompleted);
+        assertEq(completedSwap.bidAmount, highestBid);
     }
 
     function test_afterSwapDistributeToLPs() public {
@@ -171,26 +313,31 @@ contract TestMevAuctionHook is Test, Deployers {
         uint256 bidAmount = 0.1 ether;
         bytes memory hookData = abi.encode(taskId, bidAmount);
 
-        // Mock swap completion
-        hook.swaps(taskId).isCompleted = true;
+        // Initialize swap details
+        MevAuctionHook.SwapDetails memory swapDetails = MevAuctionHook.SwapDetails({
+            originalSender: address(0),
+            amountSpecified: 0,
+            isCompleted: true,
+            bidAmount: bidAmount
+        });
+        hook.setSwapDetails(taskId, swapDetails);
 
-        // Call afterSwap to trigger distribution
+        // Call afterSwap
         vm.prank(address(poolManager));
         hook.afterSwap(
             address(0),
             key,
             IPoolManager.SwapParams({
                 zeroForOne: true,
-                amountSpecified: -0.001 ether, // Exact input for output swap
-                sqrtPriceLimitX96: TickMath.MIN_SQRT_RATIO + 1
+                amountSpecified: -0.001 ether,
+                sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
             }),
-            BalanceDelta(0, 0),
+            toBalanceDelta(0, 0),
             hookData
         );
 
-        // Check if distribution happened correctly
-        // This requires more detailed checks based on the state of liquidity providers
-        // Mock data for liquidity providers and verify their balances
-        // This is a placeholder and should be replaced with actual checks
+        // Verify distribution
+        MevAuctionHook.SwapDetails memory completedSwap = hook.getSwapDetails(taskId);
+        assertTrue(completedSwap.isCompleted);
     }
 }

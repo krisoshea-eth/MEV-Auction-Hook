@@ -26,7 +26,6 @@ import {IPauserRegistry} from "../mev-auction-avs/contracts/lib/eigenlayer-middl
 import {BLSMockAVSDeployer} from "../mev-auction-avs/contracts/lib/eigenlayer-middleware/test/utils/BLSMockAVSDeployer.sol";
 import {HookMiner} from "./utils/HookMiner.sol";
 import {TransparentUpgradeableProxy} from "../mev-auction-avs/contracts/lib/eigenlayer-middleware/lib/openzeppelin-contracts/contracts/proxy/transparent/TransparentUpgradeableProxy.sol";
-// import {Address} from "../mev-auction-avs/contracts/lib/eigenlayer-middleware/lib/openzeppelin-contracts/contracts/utils/Address.sol";
 import {AddressAliased} from "../lib/v4-periphery/lib/openzeppelin-contracts/contracts/utils/AddressAliased.sol";
 
 contract TestMevAuctionHook is Test, Deployers {
@@ -110,7 +109,7 @@ contract TestMevAuctionHook is Test, Deployers {
         token.mint(address(1), 1000 ether);
     
         // Mine an address that has flags set for the hook functions we want
-        uint160 flags = uint160(Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG | Hooks.AFTER_SWAP_RETURNS_DELTA_FLAG);
+        uint160 flags = uint160(Hooks.BEFORE_SWAP_FLAG | Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG);
 
         // Generate creation code with constructor arguments
         bytes memory creationCode = type(MevAuctionHook).creationCode;
@@ -135,6 +134,11 @@ contract TestMevAuctionHook is Test, Deployers {
             "TEST_MEV_AUCTION",
             tm
         );
+        deal(address(hook), 10 ether);
+         // Mint 1000 MockERC20 tokens to the MevAuctionHook contract
+         token.mint(address(hook), 1000 ether);
+         vm.prank(address(hook));
+
 
         // Ensure the deployed address matches the mined address
         require(hookAddress == address(hook), "Deployed hook address does not match mined address");
@@ -153,6 +157,26 @@ contract TestMevAuctionHook is Test, Deployers {
             SQRT_RATIO_1_1, // Initial Sqrt(P) value = 1
             ZERO_BYTES // No additional `initData`
         );
+
+         // Approve tokens for pool manager and swap router
+    token.approve(address(poolManager), type(uint256).max);
+    token.approve(address(swapRouter), type(uint256).max);
+
+    // Ensure the manager has enough tokens
+    token.mint(address(poolManager), 1000 ether);
+
+    // Ensure the regular address has enough tokens
+    address regularAddress = address(0x123);
+    token.mint(regularAddress, 1000 ether);
+    vm.prank(regularAddress);
+    token.approve(address(swapRouter), type(uint256).max);
+
+    // Log balances and approvals
+    emit log_named_uint("Pool Manager Token Balance", token.balanceOf(address(poolManager)));
+    emit log_named_uint("Regular Address Token Balance", token.balanceOf(regularAddress));
+    emit log_named_uint("Token Allowance for Swap Router by Regular Address", token.allowance(regularAddress, address(swapRouter)));
+    emit log_named_uint("Token Allowance for Pool Manager by this contract", token.allowance(address(this), address(poolManager)));
+
     }
 
     function testCreateNewTask() public {
@@ -254,9 +278,30 @@ contract TestMevAuctionHook is Test, Deployers {
     }
 
     function test_addLiquidityAndSwap() public {
-        // Set no referrer in the hook data
-        bytes memory hookData = abi.encode(address(0), address(this));
+        // Define an outside address (e.g., a user)
+        address outsideAddress = address(0x123);
     
+        // Set no referrer in the hook data
+        bytes memory hookData = abi.encode(address(0), outsideAddress);
+        
+        // Ensure the manager has enough Ether
+        vm.deal(address(manager), 10 ether);
+        
+        // Ensure the manager has enough tokens and approves them for spending
+        uint256 tokenAmount = 10 ether;
+        token.mint(address(manager), tokenAmount);
+        vm.prank(address(manager));
+        token.approve(address(modifyLiquidityRouter), tokenAmount);
+        
+        // Ensure the outside address has enough tokens and approves them for spending
+        token.mint(outsideAddress, tokenAmount);
+        vm.prank(outsideAddress);
+        token.approve(address(swapRouter), tokenAmount);
+        
+        vm.startPrank(address(manager));
+        emit log_named_uint("Manager ETH balance before add liquidity", address(manager).balance);
+        emit log_named_uint("Manager TOKEN balance before add liquidity", token.balanceOf(address(manager)));
+        
         // Add liquidity
         modifyLiquidityRouter.modifyLiquidity{value: 0.003 ether}(
             key,
@@ -268,8 +313,16 @@ contract TestMevAuctionHook is Test, Deployers {
             }),
             hookData
         );
-    
-        // Swap tokens
+        
+        emit log_named_uint("Manager ETH balance after add liquidity", address(manager).balance);
+        emit log_named_uint("Manager TOKEN balance after add liquidity", token.balanceOf(address(manager)));
+        vm.stopPrank();
+        
+        // Swap tokens by the outside address
+        vm.startPrank(outsideAddress);
+        emit log_named_uint("Outside address ETH balance before swap", outsideAddress.balance);
+        emit log_named_uint("Outside address TOKEN balance before swap", token.balanceOf(outsideAddress));
+        
         swapRouter.swap{value: 0.001 ether}(
             key,
             IPoolManager.SwapParams({
@@ -283,58 +336,120 @@ contract TestMevAuctionHook is Test, Deployers {
             }),
             hookData
         );
+        
+        emit log_named_uint("Outside address ETH balance after swap", outsideAddress.balance);
+        emit log_named_uint("Outside address TOKEN balance after swap", token.balanceOf(outsideAddress));
+        vm.stopPrank();
     }
 
     function test_executeSwap() public {
-        uint32 taskId = 1;
-        bytes memory hookData = abi.encode(address(0), address(this));
-
+        uint32 taskId;
+        bytes memory hookData;
+        
         uint256 highestBid = 0.1 ether;
         address highestBidder = address(this);
-
-        // Initialize swap details
-        MevAuctionHook.SwapDetails memory swapDetails = MevAuctionHook.SwapDetails({
-            originalSender: address(1),
-            amountSpecified: 1 ether,
-            isCompleted: false,
-            bidAmount: highestBid
-        });
-        hook.setSwapDetails(taskId, swapDetails);
-
-        // Execute swap
+        vm.deal(highestBidder, 10 ether);
+    
+        // Mint tokens to the highest bidder and approve
+        token.mint(highestBidder, 1000 ether);
         vm.prank(highestBidder);
-        hook.executeSwap{value: highestBid}(
-            taskId,
+        token.approve(address(tm), 1000 ether);
+    
+        // Regular address initiates a swap, triggering beforeSwap and creating the auction
+        address regularAddress = address(0x123);
+        vm.deal(regularAddress, 10 ether);
+        token.mint(regularAddress, 1000 ether);
+        vm.prank(regularAddress);
+        token.approve(address(swapRouter), 1 ether);
+    
+        // Ensure the MevAuctionHook contract has enough ETH
+        vm.deal(address(hook), 1 ether); // Adjust the amount as needed
+    
+        // Regular address initiates the swap
+        vm.prank(regularAddress);
+        swapRouter.swap{gas: 3000000}(
             key,
             IPoolManager.SwapParams({
                 zeroForOne: true,
                 amountSpecified: -0.001 ether,
                 sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
-            })
+            }),
+            PoolSwapTest.TestSettings({
+                takeClaims: true,
+                settleUsingBurn: true
+            }),
+            hookData
         );
-
+    
+        // Retrieve the created taskId from the swap
+        taskId = tm.latestTaskNum();
+        hookData = abi.encode(taskId, address(this));
+    
+        // Submit the highest bid
+        vm.prank(highestBidder);
+        tm.submitBid(taskId, highestBid);
+    
+        // Warp to the end of the auction period
+        vm.warp(block.timestamp + 10 minutes);
+    
+        // Execute swap by the highest bidder
+        vm.prank(highestBidder);
+        hook.executeSwap{value: highestBid, gas: 3000000}(
+            taskId
+        );
+    
         // Verify the swap was completed
         MevAuctionHook.SwapDetails memory completedSwap = hook.getSwapDetails(taskId);
         assertTrue(completedSwap.isCompleted);
         assertEq(completedSwap.bidAmount, highestBid);
     }
+    
+    
+    
 
     function test_afterSwapDistributeToLPs() public {
-        uint32 taskId = 1;
-        uint256 bidAmount = 0.1 ether;
-        bytes memory hookData = abi.encode(taskId, bidAmount);
+        uint32 taskId;
+        uint256 highestBid = 0.1 ether;
+        address highestBidder = address(this);
+        vm.deal(highestBidder, 10 ether);
 
-        // Initialize swap details
-        MevAuctionHook.SwapDetails memory swapDetails = MevAuctionHook.SwapDetails({
-            originalSender: address(0),
-            amountSpecified: 0,
-            isCompleted: true,
-            bidAmount: bidAmount
-        });
-        hook.setSwapDetails(taskId, swapDetails);
+        // Regular address initiates a swap, triggering beforeSwap and creating the auction
+        address regularAddress = address(0x123);
+        vm.deal(regularAddress, 10 ether);
+        vm.prank(regularAddress);
+        swapRouter.swap{value: 0.001 ether, gas: 3000000}(
+            key,
+            IPoolManager.SwapParams({
+                zeroForOne: true,
+                amountSpecified: -0.001 ether,
+                sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
+            }),
+            PoolSwapTest.TestSettings({
+                takeClaims: true,
+                settleUsingBurn: true
+            }),
+            new bytes(0)
+        );
+
+        // Retrieve the created taskId from the swap
+        taskId = tm.latestTaskNum();
+
+        // Submit the highest bid
+        vm.prank(highestBidder);
+        tm.submitBid(taskId, highestBid);
+
+        // Warp to the end of the auction period
+        vm.warp(block.timestamp + 10 minutes);
+
+        // Execute swap by the highest bidder
+        vm.prank(highestBidder);
+        hook.executeSwap{value: highestBid, gas: 3000000}(
+            taskId
+        );
 
         // Call afterSwap
-        vm.prank(address(poolManager));
+        bytes memory hookData = abi.encode(taskId, highestBid);
+        vm.prank(address(manager));
         hook.afterSwap(
             address(0),
             key,

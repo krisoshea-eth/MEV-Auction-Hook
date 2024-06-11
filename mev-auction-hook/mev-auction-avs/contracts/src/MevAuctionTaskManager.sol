@@ -79,13 +79,17 @@ contract MevAuctionTaskManager is
         generator = _generator;
     }
 
+    function setGenerator(address newGenerator) external onlyTaskGenerator {
+        generator = newGenerator;
+    }
+
     /* FUNCTIONS */
     // NOTE: this function creates new auction task, assigns it a taskId
     function createNewTask(
         uint256 auctionDuration,
         uint32 quorumThresholdPercentage,
         bytes calldata quorumNumbers
-    ) external onlyTaskGenerator {
+    ) external {
         // create a new task struct
         Task memory newTask;
         newTask.auctionDuration = auctionDuration;

@@ -33,7 +33,8 @@ contract MevAuctionHook is BaseHook, ERC20 {
 
     struct SwapDetails {
         address originalSender;
-        uint256 amountSpecified;
+        PoolKey key;
+        IPoolManager.SwapParams swapParams;
         bool isCompleted;
         uint256 bidAmount;
     }
@@ -43,6 +44,10 @@ contract MevAuctionHook is BaseHook, ERC20 {
     // keeping track of swap details
     mapping(uint32 => SwapDetails) public swaps;
 
+    event NewTaskCreated(uint32 taskId);
+    event SwapExecuting(uint32 taskId);
+    event SwapExecuted(uint32 taskId, uint256 deltaAmount);
+
     modifier onlyWhenHooksEnabled() {
         require(!hooksDisabled, "Hooks are disabled");
         _;
@@ -50,14 +55,12 @@ contract MevAuctionHook is BaseHook, ERC20 {
 
 	// Initialize BaseHook and ERC20
     constructor(
-        IPoolManager _poolManager,
+        IPoolManager poolManager,
         string memory _name,
         string memory _symbol,
         IMevAuctionTaskManager _mevAuctionTaskManager
-    ) BaseHook(_poolManager) ERC20(_name, _symbol, 18) {
+    ) BaseHook(poolManager) ERC20(_name, _symbol, 18) {
         mevAuctionTaskManager = _mevAuctionTaskManager;
-        // // Validate hook permissions during deployment
-        // Hooks.validateHookPermissions(this, getHookPermissions());
     }
 
 	// Set up hook permissions to return `true`
@@ -77,93 +80,102 @@ contract MevAuctionHook is BaseHook, ERC20 {
                 afterAddLiquidity: false,
                 afterRemoveLiquidity: false,
                 beforeSwap: true,
-                afterSwap: true,
+                afterSwap: false,
                 beforeDonate: false,
                 afterDonate: false,
-                beforeSwapReturnDelta: false,
-                afterSwapReturnDelta: true,
+                beforeSwapReturnDelta: true,
+                afterSwapReturnDelta: false,
                 afterAddLiquidityReturnDelta: false,
                 afterRemoveLiquidityReturnDelta: false
             });
     }
 
     // Make a call to the eigenlayer AVS to initiate the auction
-	function beforeSwap(
+    function beforeSwap(
         address sender,
         PoolKey calldata key,
         IPoolManager.SwapParams calldata swapParams,
         bytes calldata hookData
     ) external override onlyWhenHooksEnabled poolManagerOnly returns (bytes4, BeforeSwapDelta, uint24) {
-        mevAuctionTaskManager.createNewTask(uint256(swapParams.amountSpecified), 10 minutes, hookData);
-        swaps[mevAuctionTaskManager.taskNumber()] = SwapDetails({
-            originalSender: sender,
-            amountSpecified: uint256(swapParams.amountSpecified),
-            isCompleted: false,
-            bidAmount: 0
-        });
-        return (this.beforeSwap.selector, toBeforeSwapDelta(0, 0), 0);
-    }
-	
-    // Distribute arbitrageur auction profits amongst pool Lps
-	function afterSwap(
-        address,
-        PoolKey calldata key,
-        IPoolManager.SwapParams calldata swapParams,
-        BalanceDelta delta,
-        bytes calldata hookData
-    ) external override onlyWhenHooksEnabled poolManagerOnly returns (bytes4, int128) {
-
-        // Handle distribution of bid amount to liquidity providers
-        (uint32 taskId, uint256 bidAmount) = abi.decode(hookData, (uint32, uint256));
-
-        require(swaps[taskId].isCompleted, "Swap not completed by arbitrageur");
-
-        // Distribute the bid amount to liquidity providers
-        distributeToLPs(bidAmount, key);
         
-        return (this.afterSwap.selector, 0);
-	}
+        if (hookData.length == 0) {
+            mevAuctionTaskManager.createNewTask(uint256(swapParams.amountSpecified), 10 minutes, hookData);
+            swaps[mevAuctionTaskManager.taskNumber()] = SwapDetails({
+                originalSender: sender,
+                key: key,
+                swapParams: swapParams,
+                isCompleted: false,
+                bidAmount: 0
+            });
+            emit NewTaskCreated(mevAuctionTaskManager.taskNumber());
+        }
 
-    function executeSwap(
-        uint32 taskId,
-        PoolKey calldata key,
-        IPoolManager.SwapParams calldata swapParams
-    ) external payable {
-        // Get auction details to verify caller
+        uint256 amountSpecified = swapParams.amountSpecified > 0 ? uint256(swapParams.amountSpecified) : uint256(-swapParams.amountSpecified);
+        require(amountSpecified <= type(uint256).max, "Amount specified overflow");
+
+        if (swapParams.zeroForOne){
+            poolManager.take(key.currency0, address(this), amountSpecified);
+        } else {
+            poolManager.take(key.currency1, address(this), amountSpecified);
+        }
+
+        return (this.beforeSwap.selector, toBeforeSwapDelta(int128(-swapParams.amountSpecified), 0), 0);
+    }
+
+    function executeSwap(uint32 taskId) external payable {
+        SwapDetails storage swapDetails = swaps[taskId];
         IMevAuctionTaskManager.Auction memory auction = mevAuctionTaskManager.getAuctionDetails(taskId);
+
         require(msg.sender == auction.highestBidder, "Only the highest bidder can execute the swap");
         require(msg.value == auction.highestBid, "Incorrect bid amount");
 
-        // Mark the swap as completed and store the bid amount
-        swaps[taskId].isCompleted = true;
-        swaps[taskId].bidAmount = msg.value;
+        swapDetails.bidAmount = msg.value;
+        BalanceDelta finalDelta = abi.decode(
+            poolManager.unlock(
+                abi.encode(
+                    SwapDetails(swapDetails.originalSender, swapDetails.key, swapDetails.swapParams, swapDetails.isCompleted, swapDetails.bidAmount)
+                )
+            ),
+            (BalanceDelta)
+        );
 
-        // Disable hooks temporarily
-        hooksDisabled = true;
+        swapDetails.isCompleted = true;
+        
+        emit SwapExecuting(taskId);
 
-        // Execute the swap and capture the output amount
-        BalanceDelta delta = poolManager.swap(key, swapParams, "");
+        bytes memory hookData = abi.encode(taskId, msg.value);
 
-        // Enable hooks again
-        hooksDisabled = false;
+        ERC20 outputToken = ERC20(Currency.unwrap(swapDetails.swapParams.zeroForOne ? swapDetails.key.currency1 : swapDetails.key.currency0));
+        uint256 amountOut = finalDelta.amount1() > 0 ? uint256(int256(finalDelta.amount1())) : 0;
+        outputToken.transfer(swapDetails.originalSender, amountOut);
+        emit SwapExecuted(taskId, amountOut);
 
-         // Send swap output to the original sender
-         ERC20 outputToken = ERC20(Currency.unwrap(swapParams.zeroForOne ? key.currency1 : key.currency0));
-         outputToken.transfer(swaps[taskId].originalSender, uint256(int256(delta.amount1())));
-    }
-    
-    function distributeToLPs(uint256 amount, PoolKey calldata key) internal {
-        PoolId poolId = key.toId();
-        uint128 totalLiquidity = StateLibrary.getLiquidity(poolManager, poolId);
-
-        for (uint256 i = 0; i < getPositionCount(poolId); i++) {
-            bytes32 positionKey = getPositionKeyAt(poolId, i);
-            (uint128 liquidity,,) = StateLibrary.getPositionInfo(poolManager, poolId, positionKey);
-            address owner = getOwnerFromPositionKey(positionKey); // Assuming this method exists to extract owner info
-            uint256 lpShare = (liquidity * amount) / totalLiquidity;
-            (bool sent, ) = owner.call{value: lpShare}("");
-            require(sent, "Failed to send Ether to liquidity provider");
+        if (swapDetails.swapParams.zeroForOne) {
+            if (finalDelta.amount0() < 0) {
+                poolManager.settle(swapDetails.key.currency0);
+            }
+            if (finalDelta.amount1() > 0) {
+                poolManager.take(swapDetails.key.currency1, address(this), uint256(int256(finalDelta.amount1())));
+            }
+        } else {
+            if (finalDelta.amount1() < 0) {
+                poolManager.settle(swapDetails.key.currency1);
+            }
+            if (finalDelta.amount0() > 0) {
+                poolManager.take(swapDetails.key.currency0, address(this), uint256(int256(finalDelta.amount0())));
+            }
         }
+    }
+
+    function unlockCallback(bytes calldata data) external override poolManagerOnly returns (bytes memory) {
+        SwapDetails memory swapDetails = abi.decode(data, (SwapDetails));
+
+        BalanceDelta swapDelta = poolManager.swap(swapDetails.key, swapDetails.swapParams, "");
+        BalanceDelta donateDelta = poolManager.donate(swapDetails.key, swapDetails.bidAmount, 0, "");
+
+        BalanceDelta finalDelta = swapDelta;
+
+        return abi.encode(finalDelta);
     }
 
     function getPositionCount(PoolId poolId) internal view returns (uint256 count) {
@@ -197,5 +209,9 @@ contract MevAuctionHook is BaseHook, ERC20 {
         // Extract owner information from positionKey. Assuming the owner address is part of the positionKey.
         // This function needs to be implemented based on how the positionKey is generated.
         return address(uint160(uint256(positionKey)));   
+    }
+
+    receive() external payable {
+        require(msg.value > 0, "Must send ETH");
     }
 }
